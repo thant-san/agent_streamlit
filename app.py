@@ -316,24 +316,81 @@ if send_btn:
                     except Exception:
                         fallback_payload = None
 
-                if isinstance(fallback_payload, dict) and all(k in fallback_payload for k in ("to", "subject", "body")):
+                if isinstance(fallback_payload, dict):
+                    # Inspect the Gmail tool schema to determine required params
+                    tool_schema = None
                     try:
-                        result = composio.tools.execute(
-                            slug="GMAIL_SEND_EMAIL",
-                            arguments={
-                                "to": fallback_payload["to"],
-                                "subject": fallback_payload["subject"],
-                                "body": fallback_payload["body"],
-                            },
-                            user_id=user_id,
-                        )
-                        st.success("✅ Email sent (fallback path)!")
-                        render_json("Execution Result", result)
-                    except Exception as exec_err:
-                        st.error(f"Fallback execution failed: {exec_err}")
+                        # tools is fetched above via composio.tools.get(...)
+                        # It can be a list or dict depending on SDK; normalize to list
+                        tool_list = tools if isinstance(tools, list) else [tools]
+                        for t in tool_list:
+                            fn = t.get("function", {}) if isinstance(t, dict) else {}
+                            if fn.get("name") == "GMAIL_SEND_EMAIL":
+                                tool_schema = fn.get("parameters")
+                                break
+                    except Exception:
+                        tool_schema = None
+
+                    required_fields = []
+                    if isinstance(tool_schema, dict):
+                        required_fields = tool_schema.get("required", []) or []
+                    # Build arguments by mapping common aliases to the required names
+                    aliases = {
+                        "recipient_email": ["to", "email", "to_email", "recipient"],
+                        "to": ["recipient_email", "email", "to_email", "recipient"],
+                        "subject": ["title", "topic"],
+                        "body": ["message", "content", "text"],
+                        "message": ["body", "content", "text"],
+                    }
+
+                    def choose_value(name: str) -> str | None:
+                        if name in fallback_payload:
+                            return fallback_payload.get(name)
+                        for alt in aliases.get(name, []):
+                            if alt in fallback_payload:
+                                return fallback_payload.get(alt)
+                        return None
+
+                    arguments = {}
+                    # If we know the required fields from schema, honor them
+                    if required_fields:
+                        for req in required_fields:
+                            val = choose_value(req)
+                            if val is not None:
+                                arguments[req] = val
+                    else:
+                        # Default to common Gmail fields
+                        for key in ("recipient_email", "to", "subject", "body", "message"):
+                            val = choose_value(key)
+                            if val is not None:
+                                arguments[key] = val
+
+                    # Final normalization: prefer recipient_email over to; prefer body over message
+                    if "recipient_email" not in arguments and "to" in arguments:
+                        arguments["recipient_email"] = arguments.pop("to")
+                    if "body" not in arguments and "message" in arguments:
+                        arguments["body"] = arguments["message"]
+
+                    if all(k in arguments and arguments[k] for k in ("recipient_email", "subject", "body")):
+                        try:
+                            result = composio.tools.execute(
+                                slug="GMAIL_SEND_EMAIL",
+                                arguments=arguments,
+                                user_id=user_id,
+                            )
+                            st.success("✅ Email sent (fallback path)!")
+                            render_json("Execution Result", result)
+                        except Exception as exec_err:
+                            st.error(f"Fallback execution failed: {exec_err}")
+                            render_json("Gmail Tool Arguments", arguments)
+                            render_json("Gmail Tool Schema", tool_schema or {"note": "schema unavailable"})
+                            render_json("Model Message", resp.choices[0].message.model_dump() if hasattr(resp.choices[0].message, "model_dump") else {"message": str(resp.choices[0].message)})
+                    else:
+                        st.warning("Model returned no tool calls and content did not include required email fields.")
+                        render_json("Needed Fields", {"required": ["recipient_email", "subject", "body"], "provided": list(fallback_payload.keys())})
                         render_json("Model Message", resp.choices[0].message.model_dump() if hasattr(resp.choices[0].message, "model_dump") else {"message": str(resp.choices[0].message)})
                 else:
-                    st.warning("Model returned no tool calls and content was not valid email JSON (to/subject/body).")
+                    st.warning("Model returned no tool calls and content was not JSON.")
                     render_json("Model Message", resp.choices[0].message.model_dump() if hasattr(resp.choices[0].message, "model_dump") else {"message": str(resp.choices[0].message)})
             else:
                 result = composio.provider.handle_tool_calls(response=resp, user_id=user_id)
