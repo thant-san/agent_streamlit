@@ -1,3 +1,29 @@
+import re, json
+from typing import List
+from pydantic import BaseModel, ValidationError
+
+class Question(BaseModel):
+    question: str
+    choices: List[str]
+    correctIndex: int
+    explanation: str
+
+class Quiz(BaseModel):
+    title: str
+    instructions: str
+    questions: List[Question]
+
+def extract_json_block(text: str) -> str:
+    """Strip code fences and return the substring between the first '{' and last '}'."""
+    if not text:
+        raise ValueError("Empty model output.")
+    cleaned = re.sub(r"^```(?:json)?\s*|\s*```$", "", text.strip(), flags=re.S)
+    start = cleaned.find("{")
+    end = cleaned.rfind("}")
+    if start == -1 or end == -1 or end <= start:
+        raise ValueError("Could not find JSON object in the output.")
+    return cleaned[start:end+1]
+
 import json
 import streamlit as st
 from openai import OpenAI
@@ -127,6 +153,8 @@ with col3:
 
 gen_btn = st.button("🧠 Generate Quiz")
 
+gen_btn = st.button("🧠 Generate Quiz")
+
 if gen_btn:
     if not topic.strip():
         st.warning("Please enter a topic.")
@@ -134,8 +162,8 @@ if gen_btn:
         sys = {
             "role": "system",
             "content": (
-                "You are a quiz generator. Produce high-quality multiple-choice questions (MCQs) for the given topic and difficulty.\n"
-                "Return STRICT JSON only:\n\n"
+                "You are a quiz generator. Produce high-quality MCQs.\n"
+                "Return STRICT JSON only with this exact shape:\n"
                 "{\n"
                 '  "title": string,\n'
                 '  "instructions": string,\n'
@@ -147,10 +175,8 @@ if gen_btn:
                 '      "explanation": string\n'
                 "    }\n"
                 "  ]\n"
-                "}\n\n"
-                "- No code fences, no commentary — JSON only.\n"
-                "- Choices must be plausible and mutually exclusive.\n"
-                "- Exactly one correct answer per question.\n"
+                "}\n"
+                "- No code fences. No commentary. JSON object only."
             )
         }
         usr = {
@@ -159,25 +185,53 @@ if gen_btn:
         }
 
         with st.spinner("Generating quiz with LLM..."):
-            try:
-                resp = client.chat.completions.create(
-                    model="openai/gpt-5-chat-latest",
-                    messages=[sys, usr],
-                    temperature=0.7,
-                )
-                raw = resp.choices[0].message.content.strip()
-                quiz_obj = json.loads(raw)
+            last_err = None
+            quiz_obj = None
+            # Try up to 2 times: first with strict JSON enforcement, then fallback
+            for attempt in range(2):
+                try:
+                    resp = client.chat.completions.create(
+                        model="openai/gpt-5-chat-latest",
+                        messages=[sys, usr],
+                        temperature=0,
+                        response_format={"type": "json_object"},  # hard-enforce JSON
+                    )
+                except Exception as e:
+                    st.error(f"OpenAI API error: {e}")
+                    break
+
+                raw = resp.choices[0].message.content or ""
+
+                # Parse -> validate
+                try:
+                    try:
+                        data = json.loads(raw)
+                    except json.JSONDecodeError:
+                        data = json.loads(extract_json_block(raw))
+
+                    # Validate shape
+                    quiz_valid = Quiz.model_validate(data)
+                    quiz_obj = quiz_valid.model_dump()
+                    break  # success
+                except (json.JSONDecodeError, ValidationError, ValueError) as e:
+                    last_err = e
+                    # On second failure, give up
+                    if attempt == 1:
+                        pass
+
+            if not quiz_obj:
+                st.error("The model did not return valid JSON. I tried to coerce it but failed.")
+                st.caption(f"Parser note: {last_err}")
+                st.text_area("Raw model output", raw, height=240)
+            else:
                 ss.quiz_json = quiz_obj
+                # your existing quiz_to_text() is fine:
                 ss.quiz_text = quiz_to_text(quiz_obj)
                 ss.quiz_meta = {"topic": topic, "difficulty": difficulty, "count": int(count)}
                 st.success("✅ Quiz generated!")
                 st.text_area("Preview (plain text)", ss.quiz_text, height=300)
-                render_json("Quiz JSON", quiz_obj)
-            except json.JSONDecodeError:
-                st.error("The model did not return valid JSON. Try again.")
-                render_json("Raw model output", {"content": resp.choices[0].message.content})
-            except Exception as e:
-                st.error(f"OpenAI error: {e}")
+                with st.expander("Quiz JSON"):
+                    st.code(json.dumps(quiz_obj, indent=2), language="json")
 
 # ---------- Main: 2) Email the quiz via Composio Gmail tool ----------
 st.header("2) Email the Generated Quiz")
