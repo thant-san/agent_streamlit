@@ -319,13 +319,13 @@ if send_btn:
                 if isinstance(fallback_payload, dict) and all(k in fallback_payload for k in ("to", "subject", "body")):
                     try:
                         result = composio.tools.execute(
-                            user_id=user_id,
-                            tool="GMAIL_SEND_EMAIL",
-                            payload={
+                            slug="GMAIL_SEND_EMAIL",
+                            arguments={
                                 "to": fallback_payload["to"],
                                 "subject": fallback_payload["subject"],
                                 "body": fallback_payload["body"],
                             },
+                            user_id=user_id,
                         )
                         st.success("✅ Email sent (fallback path)!")
                         render_json("Execution Result", result)
