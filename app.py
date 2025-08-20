@@ -297,16 +297,44 @@ if send_btn:
     # Execute tool calls via Composio
     with st.spinner("Executing tool call via Composio..."):
         try:
-            # If the model didn't return any tool calls, inform the user early
+            # If the model didn't return any tool calls, attempt a fallback by
+            # parsing the assistant message content as JSON with to/subject/body
             try:
                 tool_calls = resp.choices[0].message.tool_calls  # type: ignore[attr-defined]
             except Exception:
                 tool_calls = None
 
             if not tool_calls:
-                st.warning("Model returned no tool calls. Ensure OAuth is complete and try again.")
-                # Show model message for debugging
-                render_json("Model Message", resp.choices[0].message.model_dump() if hasattr(resp.choices[0].message, "model_dump") else {"message": str(resp.choices[0].message)})
+                # Fallback: parse content as JSON and execute Gmail tool directly
+                content_str = resp.choices[0].message.content or ""
+                fallback_payload = None
+                try:
+                    fallback_payload = json.loads(content_str)
+                except Exception:
+                    try:
+                        fallback_payload = json.loads(extract_json_block(content_str))
+                    except Exception:
+                        fallback_payload = None
+
+                if isinstance(fallback_payload, dict) and all(k in fallback_payload for k in ("to", "subject", "body")):
+                    try:
+                        result = composio.tools.execute(
+                            user_id=user_id,
+                            tool="GMAIL_SEND_EMAIL",
+                            payload={
+                                "to": fallback_payload["to"],
+                                "subject": fallback_payload["subject"],
+                                "body": fallback_payload["body"],
+                            },
+                        )
+                        st.success("✅ Email sent (fallback path)!")
+                        render_json("Execution Result", result)
+                    except Exception as exec_err:
+                        st.error(f"Fallback execution failed: {exec_err}")
+                        render_json("Model Message", resp.choices[0].message.model_dump() if hasattr(resp.choices[0].message, "model_dump") else {"message": str(resp.choices[0].message)})
+                else:
+                    st.warning("Model returned no tool calls and content was not valid email JSON (to/subject/body).")
+                    render_json("Model Message", resp.choices[0].message.model_dump() if hasattr(resp.choices[0].message, "model_dump") else {"message": str(resp.choices[0].message)})
             else:
                 result = composio.provider.handle_tool_calls(response=resp, user_id=user_id)
                 st.success("✅ Email sent!")
