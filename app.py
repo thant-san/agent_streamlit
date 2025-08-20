@@ -274,7 +274,14 @@ if send_btn:
         st.stop()
 
     # Ask the LLM to use the tool to send email
-    system_msg = {"role": "system", "content": "You are a helpful assistant that uses provided tools."}
+    system_msg = {
+        "role": "system",
+        "content": (
+            "You are a helpful assistant that MUST use the provided tools. "
+            "When asked to send an email, you MUST call the Gmail tool with the correct fields. "
+            "Do not respond with natural language; only produce the required tool calls."
+        ),
+    }
     user_msg = {
         "role": "user",
         "content": (
@@ -287,6 +294,7 @@ if send_btn:
             resp = client.chat.completions.create(
                 model="openai/gpt-5-chat-latest",
                 tools=tools,
+                tool_choice="auto",
                 messages=[system_msg, user_msg],
                 temperature=0,
             )
@@ -298,9 +306,20 @@ if send_btn:
     # Execute tool calls via Composio
     with st.spinner("Executing tool call via Composio..."):
         try:
-            result = composio.provider.handle_tool_calls(response=resp, user_id=user_id)
-            st.success("✅ Email sent!")
-            render_json("Execution Result", result)
+            # If the model didn't return any tool calls, inform the user early
+            try:
+                tool_calls = resp.choices[0].message.tool_calls  # type: ignore[attr-defined]
+            except Exception:
+                tool_calls = None
+
+            if not tool_calls:
+                st.warning("Model returned no tool calls. Ensure OAuth is complete and try again.")
+                # Show model message for debugging
+                render_json("Model Message", resp.choices[0].message.model_dump() if hasattr(resp.choices[0].message, "model_dump") else {"message": str(resp.choices[0].message)})
+            else:
+                result = composio.provider.handle_tool_calls(response=resp, user_id=user_id)
+                st.success("✅ Email sent!")
+                render_json("Execution Result", result)
         except Exception as e:
             st.error(f"Tool execution failed: {e}")
 
