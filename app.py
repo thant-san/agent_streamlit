@@ -1,164 +1,244 @@
-import time
 import json
 import streamlit as st
 from openai import OpenAI
 from composio import Composio
 
-st.set_page_config(page_title="Composio Gmail via OpenAI", page_icon="📧", layout="centered")
-st.title("📧 Send Email via Composio + OpenAI (LLM Tools)")
+# ---------- Page setup ----------
+st.set_page_config(page_title="Quiz + Email via Composio", page_icon="🧩", layout="wide")
+st.title("🧩 Quiz Generator + 📧 Email Sender (Composio + OpenAI)")
 
-# --- Secrets / Clients ---
-def get_clients():
+# ---------- Secrets / Clients ----------
+@st.cache_resource
+def _get_clients():
     try:
         openai_key = st.secrets["OPENAI_API_KEY"]
         composio_key = st.secrets["COMPOSIO_API_KEY"]
     except KeyError as e:
-        st.error(f"Missing secret: {e}. Add it to .streamlit/secrets.toml.")
+        st.error(f"Missing secret: {e}. Add it to .streamlit/secrets.toml and restart.")
         st.stop()
     return OpenAI(base_url="https://api.aimlapi.com/v1",api_key=openai_key), Composio(api_key=composio_key)
 
-client, composio = get_clients()
+client, composio = _get_clients()
 
-# --- Sidebar: Quick help ---
+# ---------- Session defaults ----------
+ss = st.session_state
+ss.setdefault("connection_request", None)
+ss.setdefault("connected_account", None)
+ss.setdefault("redirect_url", None)
+ss.setdefault("quiz_json", None)
+ss.setdefault("quiz_text", "")
+ss.setdefault("quiz_meta", {"topic": "", "difficulty": "", "count": 0})
+
+# ---------- Sidebar: Composio auth ----------
 with st.sidebar:
-    st.header("Setup")
-    st.markdown("- Put keys in **.streamlit/secrets.toml**")
-    st.markdown("- Install **requirements.txt**")
-    st.markdown("- Click **Start OAuth** → authorize → come back → click **I finished OAuth**")
+    st.header("🔐 Composio Connection")
 
-# --- User inputs ---
-st.subheader("Step 1 · Connect your Gmail account via Composio OAuth")
-user_email = st.text_input(
-    "Your user ID (email used as Composio user_id)",
-    value="thanthtoosan.mechatronic@gmail.com",
-    placeholder="you@example.com",
-)
-auth_config_id = st.text_input(
-    "Composio auth_config_id",
-    value="ac_LWCqYV-0VfOi",
-    help="This must match the OAuth configuration you set in Composio.",
-)
+    user_id = st.text_input(
+        "User ID (email used as Composio user_id)",
+        value="",
+        placeholder="you@example.com",
+        help="This will identify your connected account in Composio."
+    )
+    auth_config_id = st.text_input(
+        "Composio auth_config_id",
+        value="ac_LWCqYV-0VfOi",
+        help="Use the OAuth config ID from your Composio dashboard."
+    )
 
-if "connection_request" not in st.session_state:
-    st.session_state.connection_request = None
-if "connected_account" not in st.session_state:
-    st.session_state.connected_account = None
-if "redirect_url" not in st.session_state:
-    st.session_state.redirect_url = None
+    col_sb1, col_sb2 = st.columns(2)
+    start_oauth = col_sb1.button("🔗 Start OAuth")
+    finish_oauth = col_sb2.button("✅ I finished OAuth")
 
-col_a, col_b = st.columns(2)
-with col_a:
-    start = st.button("🔗 Start OAuth")
-
-with col_b:
-    finished = st.button("✅ I finished OAuth")
-
-if start:
-    try:
-        req = composio.connected_accounts.initiate(
-            user_id=user_email,
-            auth_config_id=auth_config_id,
-        )
-        st.session_state.connection_request = req
-        st.session_state.redirect_url = req.redirect_url
-        st.success("OAuth flow started. Use the link below to authorize.")
-    except Exception as e:
-        st.error(f"Failed to start OAuth: {e}")
-
-if st.session_state.redirect_url:
-    st.markdown(f"**Authorize here:** [Open OAuth link]({st.session_state.redirect_url})")
-    st.info("After authorizing, return here and click **I finished OAuth**.")
-
-if finished:
-    if not st.session_state.connection_request:
-        st.warning("You need to start OAuth first.")
-    else:
-        with st.spinner("Waiting for Composio to confirm the connection..."):
+    if start_oauth:
+        if not user_id or not auth_config_id:
+            st.warning("Please fill both User ID and auth_config_id.")
+        else:
             try:
-                # Blocks until connection is established (or raises on timeout/err).
-                connected = st.session_state.connection_request.wait_for_connection()
-                st.session_state.connected_account = connected
-                st.success("Connected! Gmail tools are now available.")
+                req = composio.connected_accounts.initiate(
+                    user_id=user_id,
+                    auth_config_id=auth_config_id,
+                )
+                ss.connection_request = req
+                ss.redirect_url = req.redirect_url
+                st.success("OAuth started. Click the link below to authorize.")
             except Exception as e:
-                st.error(f"Failed to confirm connection: {e}")
+                st.error(f"Failed to start OAuth: {e}")
 
-# --- Step 2: Compose Email ---
-st.subheader("Step 2 · Compose & Send Email via LLM Tool Call")
-col1, col2 = st.columns(2)
+    if ss.redirect_url:
+        st.markdown(f"[👉 Open OAuth link to authorize Gmail access]({ss.redirect_url})")
+        st.info("After authorizing, return here and click **I finished OAuth**.")
+
+    if finish_oauth:
+        if not ss.connection_request:
+            st.warning("Start OAuth first.")
+        else:
+            with st.spinner("Waiting for Composio to confirm the connection..."):
+                try:
+                    connected = ss.connection_request.wait_for_connection()
+                    ss.connected_account = connected
+                    st.success("✅ Connected! Gmail tool is available.")
+                except Exception as e:
+                    st.error(f"Failed to confirm connection: {e}")
+
+    st.divider()
+    st.caption("Tips:\n- Keep this window open during OAuth\n- Make sure the Gmail tool is configured in Composio")
+
+# ---------- Helpers ----------
+def render_json(label, data):
+    with st.expander(label, expanded=False):
+        try:
+            st.code(json.dumps(data, indent=2), language="json")
+        except TypeError:
+            st.write(data)
+
+def quiz_to_text(quiz_obj: dict) -> str:
+    lines = []
+    title = quiz_obj.get("title", "Quiz")
+    instructions = quiz_obj.get("instructions", "")
+    lines.append(title)
+    if instructions:
+        lines.append(instructions)
+    lines.append("")
+
+    for i, q in enumerate(quiz_obj.get("questions", []), start=1):
+        lines.append(f"{i}. {q.get('question','')}")
+        choices = q.get("choices", [])
+        for idx, ch in enumerate(choices, start=1):
+            lines.append(f"   {chr(64+idx)}. {ch}")  # A., B., C., ...
+        # Show answer as well:
+        ci = q.get("correctIndex", None)
+        if isinstance(ci, int) and 0 <= ci < len(choices):
+            lines.append(f"   ✅ Answer: {chr(65+ci)}")
+        expl = q.get("explanation", "")
+        if expl:
+            lines.append(f"   ℹ️  {expl}")
+        lines.append("")
+    return "\n".join(lines)
+
+# ---------- Main: 1) Generate quiz ----------
+st.header("1) Generate a Quiz with LLM")
+col1, col2, col3 = st.columns([2,1,1])
 with col1:
-    to_email = st.text_input("To", value="timmythaw17@gmail.com")
+    topic = st.text_input("Topic", value=ss.quiz_meta.get("topic", ""))
 with col2:
-    subject = st.text_input("Subject", value="Hello from composio 👋🏻")
+    difficulty = st.selectbox("Difficulty", ["Easy", "Medium", "Hard"], index=1)
+with col3:
+    count = st.number_input("Number of Questions", min_value=1, max_value=50, value=5, step=1)
 
-body = st.text_area(
-    "Body",
-    value="Congratulations on sending your first email using AI Agents and Composio!",
-    height=140,
-)
+gen_btn = st.button("🧠 Generate Quiz")
 
+if gen_btn:
+    if not topic.strip():
+        st.warning("Please enter a topic.")
+    else:
+        sys = {
+            "role": "system",
+            "content": (
+                "You are a quiz generator. Produce high-quality multiple-choice questions (MCQs) for the given topic and difficulty.\n"
+                "Return STRICT JSON only:\n\n"
+                "{\n"
+                '  "title": string,\n'
+                '  "instructions": string,\n'
+                '  "questions": [\n'
+                "    {\n"
+                '      "question": string,\n'
+                '      "choices": [string, string, string, string],\n'
+                '      "correctIndex": number,\n'
+                '      "explanation": string\n'
+                "    }\n"
+                "  ]\n"
+                "}\n\n"
+                "- No code fences, no commentary — JSON only.\n"
+                "- Choices must be plausible and mutually exclusive.\n"
+                "- Exactly one correct answer per question.\n"
+            )
+        }
+        usr = {
+            "role": "user",
+            "content": f"Topic: {topic}\nDifficulty: {difficulty}\nNumber of questions: {count}\n"
+        }
+
+        with st.spinner("Generating quiz with LLM..."):
+            try:
+                resp = client.chat.completions.create(
+                    model="openai/gpt-5-chat-latest",
+                    messages=[sys, usr],
+                    temperature=0.7,
+                )
+                raw = resp.choices[0].message.content.strip()
+                quiz_obj = json.loads(raw)
+                ss.quiz_json = quiz_obj
+                ss.quiz_text = quiz_to_text(quiz_obj)
+                ss.quiz_meta = {"topic": topic, "difficulty": difficulty, "count": int(count)}
+                st.success("✅ Quiz generated!")
+                st.text_area("Preview (plain text)", ss.quiz_text, height=300)
+                render_json("Quiz JSON", quiz_obj)
+            except json.JSONDecodeError:
+                st.error("The model did not return valid JSON. Try again.")
+                render_json("Raw model output", {"content": resp.choices[0].message.content})
+            except Exception as e:
+                st.error(f"OpenAI error: {e}")
+
+# ---------- Main: 2) Email the quiz via Composio Gmail tool ----------
+st.header("2) Email the Generated Quiz")
+
+to_email = st.text_input("Recipient email", value="", placeholder="recipient@example.com")
+default_subject = f"Quiz: {ss.quiz_meta.get('topic','(no topic)')} — {ss.quiz_meta.get('difficulty','')}"
+subject = st.text_input("Subject", value=default_subject)
+body_prefill = ss.quiz_text or "Generate a quiz first, then come back here."
+body = st.text_area("Email body", value=body_prefill, height=260)
 confirm_send = st.checkbox("I confirm I want to send this email.")
-send_btn = st.button("📤 Send Email")
-
-def render_json(title, data):
-    with st.expander(title, expanded=False):
-        st.code(json.dumps(data, indent=2), language="json")
+send_btn = st.button("📤 Send via Composio + LLM Tool Call")
 
 if send_btn:
-    if not st.session_state.connected_account:
-        st.error("Please finish OAuth connection first.")
+    if not ss.connected_account:
+        st.error("Please complete Composio OAuth in the sidebar first.")
+        st.stop()
+    if not to_email.strip():
+        st.warning("Please enter a recipient email.")
         st.stop()
     if not confirm_send:
-        st.warning("Please tick the confirmation checkbox before sending.")
+        st.warning("Please tick the confirmation checkbox.")
         st.stop()
 
-    # 1) Fetch the pre-configured Gmail tool from Composio for this user
+    # Get Gmail tool schema from Composio
     try:
-        tools = composio.tools.get(
-            user_id=user_email,
-            tools=["GMAIL_SEND_EMAIL"],  # pre-configured tool id
-        )
+        tools = composio.tools.get(user_id=user_id, tools=["GMAIL_SEND_EMAIL"])
         if not tools:
-            st.error("No tools returned. Ensure the Gmail tool is configured in Composio.")
+            st.error("No Gmail tool found. Ensure it's configured in Composio.")
             st.stop()
         render_json("Composio Tools", tools)
     except Exception as e:
-        st.error(f"Failed to get Composio tools: {e}")
+        st.error(f"Failed to fetch tools: {e}")
         st.stop()
 
-    # 2) Ask OpenAI to use the tool by providing it in the tool schema
-    system_msg = {"role": "system", "content": "You are a helpful assistant."}
+    # Ask the LLM to use the tool to send email
+    system_msg = {"role": "system", "content": "You are a helpful assistant that uses provided tools."}
     user_msg = {
         "role": "user",
         "content": (
-            f"Send an email to {to_email} with the subject '{subject}' and "
-            f"the body '{body}'"
+            f"Send an email to {to_email} with the subject '{subject}' and the body below.\n\n{body}"
         ),
     }
 
-    with st.spinner("Calling OpenAI to plan the tool call..."):
+    with st.spinner("Planning tool call with OpenAI..."):
         try:
-            response = client.chat.completions.create(
-                model="openai/gpt-4o",
-                tools=tools,  # tool schema from Composio
+            resp = client.chat.completions.create(
+                model="openai/gpt-5-chat-latest",
+                tools=tools,
                 messages=[system_msg, user_msg],
+                temperature=0,
             )
-            render_json("OpenAI Response", response.model_dump() if hasattr(response, "model_dump") else response)
+            render_json("OpenAI Response", resp.model_dump() if hasattr(resp, "model_dump") else {"response": str(resp)})
         except Exception as e:
             st.error(f"OpenAI call failed: {e}")
             st.stop()
 
-    # 3) Execute the tool calls via Composio’s provider
-    with st.spinner("Executing tool calls via Composio..."):
+    # Execute tool calls via Composio
+    with st.spinner("Executing tool call via Composio..."):
         try:
-            result = composio.provider.handle_tool_calls(
-                response=response,
-                user_id=user_email,
-            )
-            st.success("Email sent successfully!")
+            result = composio.provider.handle_tool_calls(response=resp, user_id=user_id)
+            st.success("✅ Email sent!")
             render_json("Execution Result", result)
         except Exception as e:
             st.error(f"Tool execution failed: {e}")
-
-# --- Footer ---
-st.divider()
-st.caption("Tip: if wait feels long, verify your OAuth status in Composio dashboard, then click **I finished OAuth**.")
