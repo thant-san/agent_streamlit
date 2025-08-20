@@ -25,16 +25,9 @@ def extract_json_block(text: str) -> str:
     return cleaned[start:end+1]
 
 import json
-import tempfile
-from pathlib import Path
 import streamlit as st
 from openai import OpenAI
 from composio import Composio
-from quiz_agent import (
-    SMTPConfig,
-    generate_quiz_from_pdf,
-    agent_mode_send_quiz,
-)
 
 # ---------- Page setup ----------
 st.set_page_config(page_title="Quiz + Email via Composio", page_icon="🧩", layout="wide")
@@ -61,8 +54,6 @@ ss.setdefault("redirect_url", None)
 ss.setdefault("quiz_json", None)
 ss.setdefault("quiz_text", "")
 ss.setdefault("quiz_meta", {"topic": "", "difficulty": "", "count": 0})
-ss.setdefault("pdf_quiz_text", "")
-ss.setdefault("last_pdf_path", None)
 
 # ---------- Sidebar: Composio auth ----------
 with st.sidebar:
@@ -323,86 +314,4 @@ if send_btn:
         except Exception as e:
             st.error(f"Tool execution failed: {e}")
 
-st.divider()
-
-# ---------- Main: 3) Generate Quiz from PDF and Send via SMTP ----------
-st.header("3) Generate Quiz from PDF and Send via SMTP")
-
-col_pdf1, col_pdf2 = st.columns([2, 1])
-with col_pdf1:
-    uploaded_pdf = st.file_uploader("Upload a PDF", type=["pdf"], accept_multiple_files=False)
-with col_pdf2:
-    pdf_num_q = st.number_input("Questions (PDF)", min_value=1, max_value=30, value=5, step=1)
-    pdf_seed = st.number_input("Seed (optional)", min_value=0, value=0, step=1)
-    seed_value = int(pdf_seed) if pdf_seed else None
-
-pdf_gen_btn = st.button("📄 Generate Quiz from PDF")
-
-if pdf_gen_btn:
-    if not uploaded_pdf:
-        st.warning("Please upload a PDF first.")
-    else:
-        try:
-            with tempfile.NamedTemporaryFile(delete=False, suffix=".pdf") as tmp:
-                tmp.write(uploaded_pdf.getbuffer())
-                tmp_path = tmp.name
-            ss.last_pdf_path = tmp_path
-
-            with st.spinner("Extracting text and generating quiz..."):
-                pdf_quiz = generate_quiz_from_pdf(
-                    pdf_path=tmp_path,
-                    num_questions=int(pdf_num_q),
-                    seed=seed_value,
-                )
-            ss.pdf_quiz_text = pdf_quiz
-            st.success("✅ PDF quiz generated!")
-            st.text_area("PDF Quiz (plain text)", ss.pdf_quiz_text, height=300)
-        except Exception as e:
-            st.error(f"Failed to generate quiz from PDF: {e}")
-
-with st.expander("SMTP Settings", expanded=False):
-    col_smtp1, col_smtp2 = st.columns(2)
-    with col_smtp1:
-        smtp_host = st.text_input("SMTP Host", value="")
-        smtp_port = st.number_input("SMTP Port", min_value=1, max_value=65535, value=587, step=1)
-        smtp_use_tls = st.checkbox("Use STARTTLS (disable to use SSL)", value=True)
-    with col_smtp2:
-        smtp_username = st.text_input("SMTP Username", value="")
-        smtp_password = st.text_input("SMTP Password", value="", type="password")
-
-col_mail1, col_mail2 = st.columns([2, 1])
-with col_mail1:
-    to_email_pdf = st.text_input("Recipient email (SMTP)", value="", placeholder="recipient@example.com")
-with col_mail2:
-    subject_pdf = st.text_input("Subject (SMTP)", value="Quiz from your PDF")
-
-send_pdf_btn = st.button("📧 Send PDF Quiz via SMTP")
-
-if send_pdf_btn:
-    if not ss.last_pdf_path or not Path(ss.last_pdf_path).exists():
-        st.warning("Please upload a PDF and generate a quiz first.")
-    elif not to_email_pdf.strip() or not subject_pdf.strip():
-        st.warning("Please enter recipient email and subject.")
-    elif not smtp_host or not smtp_port or not smtp_username or not smtp_password:
-        st.warning("Please fill all SMTP settings.")
-    else:
-        try:
-            cfg = SMTPConfig(
-                host=smtp_host,
-                port=int(smtp_port),
-                username=smtp_username,
-                password=smtp_password,
-                use_tls=bool(smtp_use_tls),
-            )
-            with st.spinner("Sending email via SMTP..."):
-                agent_mode_send_quiz(
-                    pdf_path=ss.last_pdf_path,
-                    to_email=to_email_pdf,
-                    subject=subject_pdf,
-                    smtp_config=cfg,
-                    num_questions=int(pdf_num_q),
-                    seed=seed_value,
-                )
-            st.success("✅ Email sent via SMTP!")
-        except Exception as e:
-            st.error(f"Failed to send email: {e}")
+## Removed Section 3 (PDF + SMTP)
