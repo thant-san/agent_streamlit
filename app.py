@@ -162,8 +162,6 @@ with col3:
 
 gen_btn = st.button("🧠 Generate Quiz")
 
-gen_btn = st.button("🧠 Generate Quiz")
-
 if gen_btn:
     if not topic.strip():
         st.warning("Please enter a topic.")
